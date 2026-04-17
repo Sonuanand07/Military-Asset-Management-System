@@ -34,10 +34,26 @@ app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 // Logging middleware
 app.use(morgan('combined'));
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'Server is running' });
+// Enhanced health check endpoint - checks MongoDB status
+app.get('/api/health', async (req, res) => {
+  try {
+    const mongoose = await import('mongoose');
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    res.json({ 
+      status: 'OK',
+      mongodb: dbStatus,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ERROR',
+      mongodb: 'unavailable',
+      error: error.message 
+    });
+  }
 });
+
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -61,20 +77,30 @@ app.use((err, req, res, next) => {
   });
 });
 
-const startServer = async () => {
-  try {
-    // Connect to MongoDB
-    await connectDB();
-    
-    const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
-      logger.info(`Server started on port ${PORT}`, { environment: process.env.NODE_ENV });
-      console.log(`✓ Server is running on http://localhost:${PORT}`);
+const startServer = () => {
+  const PORT = process.env.PORT || 5000;
+  
+  // Start server first
+  const server = app.listen(PORT, () => {
+    logger.info(`Server started on port ${PORT}`, { environment: process.env.NODE_ENV });
+    console.log(`✓ Server is running on http://localhost:${PORT}`);
+    console.log('🔄 Attempting MongoDB connection (background)...');
+  });
+
+  // Connect to MongoDB in background (non-blocking)
+  connectDB().catch((error) => {
+    logger.error(`Background MongoDB connection failed: ${error.message}`);
+    console.error('⚠️ MongoDB connection failed - API endpoints requiring DB will fail');
+    // Don't exit - server stays running for health checks
+  });
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    logger.info('SIGTERM received, closing server');
+    server.close(() => {
+      process.exit(0);
     });
-  } catch (error) {
-    logger.error(`Failed to start server: ${error.message}`);
-    process.exit(1);
-  }
+  });
 };
 
 startServer();
